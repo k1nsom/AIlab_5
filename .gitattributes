@@ -1,0 +1,4 @@
+实验五要求.pptx filter=lfs diff=lfs merge=lfs -text
+data filter=lfs diff=lfs merge=lfs -text
+train.txt filter=lfs diff=lfs merge=lfs -text
+test_without_label.txt filter=lfs diff=lfs merge=lfs -text
