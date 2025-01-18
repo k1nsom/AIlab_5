@@ -1,170 +1,164 @@
-import os
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, BertModel
-from torchvision import models, transforms
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score
+import os  # 导入os库，用于与操作系统进行交互（例如文件路径操作）
+import pandas as pd  # 导入pandas库，用于数据处理（如读取CSV文件）
+import torch  # 导入PyTorch库，提供深度学习的核心功能
+from torch.utils.data import Dataset, DataLoader  # 从PyTorch中导入Dataset和DataLoader，用于自定义数据集和批量加载
+from transformers import BertTokenizer, BertModel  # 导入HuggingFace的transformers库，用于加载BERT模型和Tokenizer
+from torchvision import transforms, models  # 导入torchvision库，用于图像处理和使用预训练的图像模型
+import torch.nn as nn  # 导入PyTorch的神经网络模块，用于构建深度学习模型
+from PIL import Image  # 导入PIL库，用于处理图像数据
+from tqdm import tqdm  # 导入tqdm库，用于显示训练和评估进度条
 
-# Define paths
-data_path = './'
-train_file = os.path.join(data_path, 'train.txt')
-test_file = os.path.join(data_path, 'test_without_label.txt')
-
-# Load and preprocess data
-def load_data(file_path, is_test=False):
-    data = []
-    with open(file_path, 'r') as f:
-        lines = f.readlines()[1:]  # Skip header
-        for line in lines:
-            guid, tag = line.strip().split(',')
-            data.append((guid, None if is_test else tag))
-    return data
-
-train_data = load_data(train_file)
-test_data = load_data(test_file, is_test=True)
-
-# Define Dataset class
-class MultimodalDataset(Dataset):
-    def __init__(self, data, tokenizer, transform, is_test=False):
-        self.data = data
-        self.tokenizer = tokenizer
-        self.transform = transform
-        self.is_test = is_test
+# 定义自定义数据集类
+class TextImageDataset(Dataset):
+    def __init__(self, csv_file, data_dir, tokenizer, max_length, transform=None, is_test=False):
+        # 初始化时加载数据集的CSV文件，并保存相关参数
+        self.data = pd.read_csv(csv_file)  # 读取CSV文件
+        self.data_dir = data_dir  # 数据目录，用于存储图像和文本文件
+        self.tokenizer = tokenizer  # BERT的tokenizer，用于处理文本
+        self.max_length = max_length  # 最大文本长度
+        self.transform = transform  # 图像处理操作
+        self.is_test = is_test  # 是否为测试集，测试集不需要标签
 
     def __len__(self):
+        # 返回数据集的大小
         return len(self.data)
 
     def __getitem__(self, idx):
-        guid, label = self.data[idx]
-        text = f"Sample text for {guid}"  # Placeholder, replace with actual text loading logic
-        image = torch.rand(3, 224, 224)  # Placeholder, replace with actual image loading logic
+        # 获取指定索引的样本
+        guid = self.data.iloc[idx, 0]  # 获取文本和图像的唯一标识符
+        label = self.data.iloc[idx, 1] if not self.is_test else "null"  # 如果是测试集，没有标签
 
-        tokens = self.tokenizer(text, truncation=True, padding='max_length', max_length=128, return_tensors='pt')
-        input_ids = tokens['input_ids'].squeeze(0)
-        attention_mask = tokens['attention_mask'].squeeze(0)
+        # 加载文本数据
+        text_path = os.path.join(self.data_dir, f"{guid}.txt")  # 构建文本文件路径
+        with open(text_path, "r", encoding="utf-8", errors="ignore") as file:
+            text = file.read()  # 读取文本内容
 
-        if self.is_test:
-            return input_ids, attention_mask, image, guid
-
-        label = {'positive': 0, 'neutral': 1, 'negative': 2}[label]
-        return input_ids, attention_mask, image, label
-
-# Initialize tokenizer and transforms
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor()
-])
-
-# Split data into training and validation
-train_data, val_data = train_test_split(train_data, test_size=0.2, random_state=42)
-
-train_dataset = MultimodalDataset(train_data, tokenizer, transform)
-val_dataset = MultimodalDataset(val_data, tokenizer, transform)
-test_dataset = MultimodalDataset(test_data, tokenizer, transform, is_test=True)
-
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
-
-# Define the model
-class MultimodalModel(nn.Module):
-    def __init__(self):
-        super(MultimodalModel, self).__init__()
-        from torchvision.models import ResNet18_Weights
-        self.text_model = BertModel.from_pretrained('bert-base-uncased')
-        self.image_model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-        self.image_model.fc = nn.Identity()  # Remove classification head
-
-        self.fc = nn.Sequential(
-            nn.Linear(self.text_model.config.hidden_size + 512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 3)
+        # 使用BERT的tokenizer将文本转换为模型可以接受的格式
+        inputs = self.tokenizer(
+            text,  # 文本
+            max_length=self.max_length,  # 最大长度
+            padding="max_length",  # 填充到最大长度
+            truncation=True,  # 超过最大长度时截断
+            return_tensors="pt"  # 返回PyTorch的张量
         )
 
+        # 加载图像数据
+        image_path = os.path.join(self.data_dir, f"{guid}.jpg")  # 构建图像文件路径
+        image = Image.open(image_path).convert("RGB")  # 打开图像并转换为RGB格式
+        if self.transform:
+            image = self.transform(image)  # 如果有图像处理操作，则进行处理
+
+        # 返回处理后的数据，包含文本和图像的输入，以及标签
+        return {
+            "input_ids": inputs["input_ids"].squeeze(0),  # 文本的输入ID
+            "attention_mask": inputs["attention_mask"].squeeze(0),  # 文本的attention mask
+            "image": image,  # 图像数据
+            "label": label if label == "null" else int(label == "positive") * 2 + int(label == "neutral")  # 标签转换为数字，positive=2, neutral=1, negative=0
+        }
+
+# 定义模型类
+class TextImageClassifier(nn.Module):
+    def __init__(self, text_model_name="bert-base-uncased", num_classes=3):
+        super(TextImageClassifier, self).__init__()
+        # 初始化时加载文本模型（BERT）和图像模型（ResNet-50）
+        self.text_model = BertModel.from_pretrained(text_model_name)  # 加载预训练BERT模型
+        self.image_model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)  # 加载预训练ResNet-50模型
+        self.image_model.fc = nn.Identity()  # 移除ResNet的最后一层全连接层
+        self.text_fc = nn.Linear(768, 256)  # 文本部分的全连接层
+        self.image_fc = nn.Linear(2048, 256)  # 图像部分的全连接层
+        self.classifier = nn.Linear(512, num_classes)  # 最后的分类层，输入维度为512（256 + 256）
+
     def forward(self, input_ids, attention_mask, images):
-        text_features = self.text_model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:, 0, :]
-        image_features = self.image_model(images)
+        # 前向传播函数，接收文本和图像输入并进行处理
+        text_features = self.text_model(input_ids=input_ids, attention_mask=attention_mask).pooler_output  # 获取文本特征
+        text_features = self.text_fc(text_features)  # 通过全连接层进行处理
+
+        image_features = self.image_model(images)  # 获取图像特征
+        image_features = self.image_fc(image_features)  # 通过图像部分的全连接层处理
+
+        # 将文本和图像特征进行拼接
         combined_features = torch.cat((text_features, image_features), dim=1)
-        output = self.fc(combined_features)
+        output = self.classifier(combined_features)  # 通过分类层得到最终输出
         return output
 
-# Initialize model, loss, and optimizer
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = MultimodalModel().to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+# 训练和评估函数
+def train_model(model, dataloader, criterion, optimizer, device):
+    model.train()  # 将模型设为训练模式
+    total_loss = 0  # 初始化总损失
+    for batch in tqdm(dataloader, desc="Training", leave=False):  # 遍历数据加载器中的每个批次
+        # 将数据加载到设备（GPU/CPU）
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        images = batch["image"].to(device)
+        labels = batch["label"].to(device)
 
-# Training loop
-def train(model, loader, optimizer, criterion):
-    model.train()
-    total_loss = 0
-    all_preds, all_labels = [], []
-    for batch_idx, (input_ids, attention_mask, images, labels) in enumerate(loader):
-        input_ids, attention_mask, images, labels = input_ids.to(device), attention_mask.to(device), images.to(device), labels.to(device)
+        optimizer.zero_grad()  # 清空之前的梯度
+        outputs = model(input_ids, attention_mask, images)  # 获取模型输出
+        loss = criterion(outputs, labels)  # 计算损失
+        loss.backward()  # 反向传播
+        optimizer.step()  # 更新参数
 
-        optimizer.zero_grad()
-        outputs = model(input_ids, attention_mask, images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+        total_loss += loss.item()  # 累加损失
 
-        total_loss += loss.item()
-        preds = torch.argmax(outputs, dim=1).cpu().tolist()
-        all_preds.extend(preds)
-        all_labels.extend(labels.cpu().tolist())
+    return total_loss / len(dataloader)  # 返回平均损失
 
-        if batch_idx % 10 == 0:
-            print(f"Batch {batch_idx}/{len(loader)}, Loss: {loss.item():.4f}")
-    accuracy = accuracy_score(all_labels, all_preds)
-    return total_loss / len(loader), accuracy
+def evaluate_model(model, dataloader, device):
+    model.eval()  # 将模型设为评估模式
+    predictions = []  # 用于保存预测结果
+    with torch.no_grad():  # 关闭梯度计算（评估时不需要计算梯度）
+        for batch in tqdm(dataloader, desc="Evaluating", leave=False):  # 遍历评估集
+            # 将数据加载到设备（GPU/CPU）
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            images = batch["image"].to(device)
 
-# Validation loop
-def evaluate(model, loader):
-    model.eval()
-    total_loss = 0
-    all_preds, all_labels = [], []
-    with torch.no_grad():
-        for input_ids, attention_mask, images, labels in loader:
-            input_ids, attention_mask, images, labels = input_ids.to(device), attention_mask.to(device), images.to(device), labels.to(device)
+            outputs = model(input_ids, attention_mask, images)  # 获取模型输出
+            preds = torch.argmax(outputs, dim=1).cpu().tolist()  # 获取预测类别
+            predictions.extend(preds)  # 将预测结果添加到列表中
 
-            outputs = model(input_ids, attention_mask, images)
-            loss = criterion(outputs, labels)
+    return predictions  # 返回所有预测结果
 
-            total_loss += loss.item()
-            preds = torch.argmax(outputs, dim=1).cpu().tolist()
-            all_preds.extend(preds)
-            all_labels.extend(labels.cpu().tolist())
+# 主脚本
+def main():
+    data_dir = "./data"  # 数据目录
+    train_csv = "train.txt"  # 训练集CSV文件
+    test_csv = "test_without_label.txt"  # 测试集CSV文件
 
-    accuracy = accuracy_score(all_labels, all_preds)
-    report = classification_report(all_labels, all_preds, target_names=['positive', 'neutral', 'negative'])
-    return total_loss / len(loader), accuracy, report
+    # 检查是否有GPU，若没有则使用CPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")  # 加载BERT的tokenizer
+    transform = transforms.Compose([  # 图像预处理操作
+        transforms.Resize((224, 224)),  # 将图像大小调整为224x224
+        transforms.ToTensor(),  # 将图像转换为Tensor
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # 对图像进行归一化
+    ])
 
-# Training process
-for epoch in range(10):
-    print(f"Epoch {epoch+1}/10")
-    train_loss, train_accuracy = train(model, train_loader, optimizer, criterion)
-    val_loss, val_accuracy, val_report = evaluate(model, val_loader)
+    # 准备数据集和数据加载器
+    train_dataset = TextImageDataset(train_csv, data_dir, tokenizer, max_length=128, transform=transform)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)  # 训练集数据加载器
 
-    print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
-    print(val_report)
+    test_dataset = TextImageDataset(test_csv, data_dir, tokenizer, max_length=128, transform=transform, is_test=True)
+    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)  # 测试集数据加载器
 
-# Prediction on test data
-model.eval()
-results = []
-with torch.no_grad():
-    for input_ids, attention_mask, images, guids in test_loader:
-        input_ids, attention_mask, images = input_ids.to(device), attention_mask.to(device), images.to(device)
+    # 初始化模型、损失函数和优化器
+    model = TextImageClassifier().to(device)
+    criterion = nn.CrossEntropyLoss()  # 分类问题常用的损失函数
+    optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)  # 使用Adam优化器
 
-        outputs = model(input_ids, attention_mask, images)
-        preds = torch.argmax(outputs, dim=1).cpu().tolist()
-        results.extend(zip(guids, preds))
+    # 训练模型
+    for epoch in range(5):  # 设置训练轮数
+        print(f"Epoch {epoch + 1}")
+        train_loss = train_model(model, train_loader, criterion, optimizer, device)  # 训练一个epoch
+        print(f"Loss: {train_loss:.4f}")
 
-# Save predictions
-with open('test_predictions.txt', 'w') as f:
-    f.write('guid,tag\n')
-    for guid, pred in results:
-        tag = ['positive', 'neutral', 'negative'][pred]
-        f.write(f"{guid},{tag}\n")
+    # 在测试集上进行评估
+    predictions = evaluate_model(model, test_loader, device)
+
+    # 保存预测结果
+    test_data = pd.read_csv(test_csv)  # 读取测试集数据
+    test_data["tag"] = ["positive" if p == 2 else "neutral" if p == 1 else "negative" for p in predictions]
+    test_data.to_csv("test_predictions.csv", index=False)  # 保存预测标签
+
+# 运行主函数
+if __name__ == "__main__":
+    main()

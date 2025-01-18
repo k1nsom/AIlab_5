@@ -1,0 +1,12 @@
+./
+│
+├── main.py  
+├── test_prediction.csv  
+├── test_without_label.txt 
+├── train.txt  
+└── data
+    ├── 1.jpg  
+    └── 1.txt  
+    └── 2.txt  
+    └── 2.txt  
+    ......
